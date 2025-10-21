@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Step-by-step Equation Solver</title>
+  <style>
+    /* Matrix background */
+    body{
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial;
+      background: #021014;
+      color: #d7f8ff;
+      min-height:100vh;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:30px;
+    }
+    .matrix {
+      position:fixed;inset:0;z-index:0;overflow:hidden;opacity:0.08;
+    }
+    .matrix div{position:absolute;white-space:nowrap;font-family:monospace;font-size:14px;}
+    .app{position:relative;z-index:2;max-width:900px;width:100%;background:rgba(0,8,12,0.6);border-radius:12px;padding:24px;box-shadow:0 10px 30px rgba(0,0,0,0.6);backdrop-filter: blur(6px)}
+    h1{font-size:20px;margin-bottom:6px}
+    p.lead{margin-top:0;color:#bfefff}
+    .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
+    input[type=text]{flex:1;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02);color:inherit}
+    button{padding:10px 14px;border-radius:8px;border:0;background:#00bcd4;color:#012;cursor:pointer;font-weight:600}
+    select{padding:10px;border-radius:8px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.04);color:inherit}
+    .card{margin-top:18px;background:rgba(255,255,255,0.02);padding:14px;border-radius:10px;border:1px solid rgba(255,255,255,0.03)}
+    pre{white-space:pre-wrap;font-size:14px}
+    .steps{background:linear-gradient(180deg, rgba(0,0,0,0.2), rgba(255,255,255,0.01));padding:12px;border-radius:8px}
+    .small{font-size:13px;color:#9fe7ff}
+    footer{margin-top:16px;font-size:13px;color:#86d7f0;opacity:0.9}
+    .kbd{background:#022831;padding:6px 8px;border-radius:6px;border:1px solid rgba(255,255,255,0.03);font-family:monospace}
+    .hint{color:#9ad8e6;font-size:13px}
+  </style>
+</head>
+<body>
+  <div class="matrix" aria-hidden>
+    <!-- simple falling matrix effect using JS-generated lines -->
+  </div>
+
+  <div class="app">
+    <h1>Step-by-step Equation Solver</h1>
+    <p class="lead">Enter an equation in <span class="kbd">x</span> (examples: <span class="kbd">2x+3=7</span>, <span class="kbd">x^2 - 4x + 4 = 0</span>) and click <strong>Solve</strong>. Supports linear and quadratic equations with detailed steps. Other types will get a best-effort attempt.</p>
+
+    <div class="row">
+      <input id="eqInput" type="text" placeholder="Type equation, e.g. 3x+2=11 or x^2-5x+6=0" value="x^2 - 4x + 4 = 0">
+      <select id="mode">
+        <option value="auto">Auto-detect (recommended)</option>
+        <option value="linear">Linear</option>
+        <option value="quadratic">Quadratic</option>
+      </select>
+      <button id="solveBtn">Solve</button>
+      <button id="copyBtn">Copy Steps</button>
+    </div>
+
+    <div class="card">
+      <div><strong>Equation:</strong> <span id="equationDisplay" class="small">—</span></div>
+      <div style="margin-top:8px" class="steps" id="stepsContainer">Enter an equation and press Solve to see steps.</div>
+    </div>
+
+    <footer>Built for learning — ask me to add support for systems, higher-degree polynomials, or symbolic manipulations.</footer>
+  </div>
+
+  <script>
+    // Matrix background generator
+    const matrixEl = document.querySelector('.matrix');
+    const cols = Math.floor(window.innerWidth / 14);
+    for(let i=0;i<cols;i++){
+      const div = document.createElement('div');
+      div.style.left = (i*14) + 'px';
+      div.style.top = Math.random()*window.innerHeight + 'px';
+      div.style.opacity = Math.random();
+      div.textContent = '01 10 11 00 10 01 11 00 01 10 11 00';
+      matrixEl.appendChild(div);
+      animateCol(div);
+    }
+    function animateCol(el){
+      const dur = 6000 + Math.random()*8000;
+      el.animate([{transform:'translateY(0)'},{transform:`translateY(${window.innerHeight+200}px)`}],{duration:dur,iterations:Infinity});
+    }
+
+    // Helper: normalize equation string
+    function normalize(s){
+      return s.replace(/\s+/g,'').replace(/\*+/g,'')
+              .replace(/−/g,'-') // minus sign variants
+              .replace(/\u2212/g,'-')
+              .replace(/\^/g,'^');
+    }
+
+    // Parse and move everything to left side: returns {aCoeff,bCoeff,cCoeff} for ax^2 + bx + c = 0
+    function collectCoefficients(eqn){
+      // eqn presumed normalized with single '='
+      const parts = eqn.split('=');
+      const left = parts[0]||"";
+      const right = parts[1]||"0";
+      // We'll parse terms like +3x^2 -2x +5
+      function expandSide(side){
+        // insert plus for leading if needed
+        let s = side.replace(/(^|[\+\-])/g,function(m){return m;});
+        // Split by + or - but keep sign
+        const tokens = s.match(/[\+\-]?[0-9]*\*?x\^2|[\+\-]?[0-9]*\*?x|[\+\-]?[0-9]+(?:\.[0-9]+)?/g) || [];
+        return tokens.map(t=>t.replace('*',''));
+      }
+      const L = expandSide(left);
+      const R = expandSide(right);
+      function sumTokens(tokens, sign){
+        let a=0,b=0,c=0;
+        tokens.forEach(tok=>{
+          if(tok.includes('x^2')){
+            let num = tok.replace('x^2',''); if(num==''||num=='+') num='1'; if(num=='-') num='-1'; a += parseFloat(num);
+          } else if(tok.includes('x')){
+            let num = tok.replace('x',''); if(num==''||num=='+') num='1'; if(num=='-') num='-1'; b += parseFloat(num);
+          } else if(tok.trim()!==''){
+            c += parseFloat(tok);
+          }
+        });
+        return {a:a*sign,b:b*sign,c:c*sign};
+      }
+      const leftS = sumTokens(L,1);
+      const rightS = sumTokens(R,1);
+      // Move right to left => subtract right side
+      return {a: leftS.a - rightS.a, b: leftS.b - rightS.b, c: leftS.c - rightS.c};
+    }
+
+    // Solve linear ax + b = 0 -> x = -b/a
+    function solveLinear(a,b){
+      const steps = [];
+      steps.push(`We have ${a}x + ${b} = 0.`);
+      if(a===0){
+        if(b===0) steps.push('Every number is a solution (infinitely many solutions).');
+        else steps.push('No solution (contradiction).');
+        return {steps,solutions:[]};
+      }
+      steps.push(`Isolate x: x = -(${b}) / ${a}`);
+      const sol = -b / a;
+      steps.push(`Compute: x = ${sol}`);
+      return {steps,solutions:[sol]};
+    }
+
+    // Solve quadratic ax^2 + bx + c = 0
+    function solveQuadratic(a,b,c){
+      const steps = [];
+      steps.push(`Equation: ${a}x^2 + ${b}x + ${c} = 0`);
+      if(a===0) { steps.push('Coefficient a is 0 — equation reduces to linear.'); return solveLinear(b,c); }
+      steps.push('Use quadratic formula: x = (-b ± sqrt(b^2 - 4ac)) / (2a)');
+      const disc = b*b - 4*a*c;
+      steps.push(`Compute discriminant D = b^2 - 4ac = (${b})^2 - 4*(${a})*(${c}) = ${disc}`);
+      if(disc > 0){
+        steps.push('D > 0: Two distinct real roots.');
+        const sqrtD = Math.sqrt(disc);
+        const x1 = (-b + sqrtD) / (2*a);
+        const x2 = (-b - sqrtD) / (2*a);
+        steps.push(`sqrt(D) = ${sqrtD}`);
+        steps.push(`x1 = (-b + sqrt(D)) / (2a) = (${ -b } + ${ sqrtD }) / ${2*a} = ${x1}`);
+        steps.push(`x2 = (-b - sqrt(D)) / (2a) = (${ -b } - ${ sqrtD }) / ${2*a} = ${x2}`);
+        return {steps,solutions:[x1,x2]};
+      } else if(disc === 0){
+        steps.push('D = 0: One real double root (repeated).');
+        const x = -b / (2*a);
+        steps.push(`x = -b / (2a) = ${ -b } / ${ 2*a } = ${ x }`);
+        return {steps,solutions:[x]};
+      } else {
+        steps.push('D < 0: Two complex roots.');
+        const sqrtD = Math.sqrt(Math.abs(disc));
+        const real = -b/(2*a);
+        const imag = sqrtD/(2*a);
+        const x1 = `${real.toFixed(6)} + ${imag.toFixed(6)}i`;
+        const x2 = `${real.toFixed(6)} - ${imag.toFixed(6)}i`;
+        steps.push(`x1 = ${x1}`);
+        steps.push(`x2 = ${x2}`);
+        return {steps,solutions:[x1,x2]};
+      }
+    }
+
+    // Main solve dispatcher
+    document.getElementById('solveBtn').addEventListener('click',()=>{
+      const raw = document.getElementById('eqInput').value;
+      const mode = document.getElementById('mode').value;
+      const eqn = normalize(raw);
+      document.getElementById('equationDisplay').textContent = eqn || '—';
+      if(!eqn.includes('=')){
+        document.getElementById('stepsContainer').innerHTML = '<div class="small">Please include an = sign (e.g. 2x+3=7).</div>';
+        return;
+      }
+      const coeffs = collectCoefficients(eqn);
+      const a = Number(coeffs.a || 0), b = Number(coeffs.b || 0), c = Number(coeffs.c || 0);
+      // Determine type
+      let chosen = mode;
+      if(mode==='auto'){
+        if(Math.abs(a) > 0) chosen = 'quadratic'; else chosen = 'linear';
+      }
+      let result;
+      if(chosen === 'linear'){
+        // linear means bx + c = 0 where b is coeff of x
+        result = solveLinear(b,c);
+      } else {
+        result = solveQuadratic(a,b,c);
+      }
+      // Render steps
+      const cont = document.getElementById('stepsContainer');
+      cont.innerHTML = '';
+      result.steps.forEach((s,idx)=>{
+        const p = document.createElement('div');
+        p.style.marginBottom = '8px';
+        p.innerHTML = `<strong>Step ${idx+1}:</strong> <span>${escapeHtml(s)}</span>`;
+        cont.appendChild(p);
+      });
+      // Show solutions
+      const solDiv = document.createElement('div');
+      solDiv.style.marginTop='10px';
+      solDiv.innerHTML = `<strong>Solution:</strong> <span class="small">${result.solutions.length? result.solutions.join(', '): '—'}</span>`;
+      cont.appendChild(solDiv);
+
+      // store last steps for copy
+      window._lastSteps = (result.steps.map((s,i)=>`Step ${i+1}: ${s}`).join('\n')) + '\nSolution: ' + (result.solutions.length? result.solutions.join(', '): 'None');
+    });
+
+    document.getElementById('copyBtn').addEventListener('click',()=>{
+      if(window._lastSteps){ navigator.clipboard.writeText(window._lastSteps).then(()=>alert('Steps copied to clipboard!')); }
+      else alert('No steps available yet.');
+    });
+
+    function escapeHtml(unsafe) {
+      return unsafe.replace(/[&<>"']/g, function(m) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#039;"}[m]; });
+    }
+
+    // small demo: solve on Enter
+    document.getElementById('eqInput').addEventListener('keydown', (e)=>{ if(e.key==='Enter') document.getElementById('solveBtn').click(); });
+  </script>
+</body>
+</html>
